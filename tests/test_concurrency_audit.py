@@ -10,7 +10,41 @@ from app.models.outbox import EmailOutbox, OutboxStatus
 from app.models.subscription import SubscriptionRequest, SubscriptionStatus
 from app.models.webhook import WebhookEvent, WebhookStatus
 from app.services.email_client import EmailPermanentError, EmailRetryableError
+from app.services.webhook_service import verify_and_schedule_event_jobs
 from app.services.worker import worker
+
+
+@pytest.mark.asyncio
+async def test_outbox_failure_rolls_back_subscription_to_pending(test_db_session):
+    """
+    Step 0 Integrity Check: If outbox job insertion or commit fails, the atomic
+    database transaction rolls back, returning the subscription to 'pending'.
+    """
+    async with test_db_session() as session:
+        evt = WebhookEvent(event_id="evt_fail_tx", sku="HOOD-FAIL-TX", quantity=5, payload="{}")
+        sub = SubscriptionRequest(email="rollback@example.com", sku="HOOD-FAIL-TX", status=SubscriptionStatus.PENDING.value)
+        session.add_all([evt, sub])
+        await session.commit()
+        sub_id = sub.id
+
+    # Simulate stock in-stock, but inject an exception on session.add or commit
+    async with test_db_session() as session:
+        event = await session.get(WebhookEvent, "evt_fail_tx")
+        with patch.object(session, "commit", side_effect=Exception("Simulated DB Write Error")):
+            with patch("app.services.webhook_service.stock_client.get_sku_stock", new=AsyncMock(return_value={"in_stock": True, "quantity": 5})):
+                with pytest.raises(Exception, match="Simulated DB Write Error"):
+                    await verify_and_schedule_event_jobs(session, event)
+
+    # Verify subscription rolled back to 'pending'
+    async with test_db_session() as session:
+        sub_check = await session.get(SubscriptionRequest, sub_id)
+        assert sub_check.status == SubscriptionStatus.PENDING.value
+
+        # Verify no outbox job was committed
+        jobs = (await session.execute(
+            select(EmailOutbox).where(EmailOutbox.subscription_id == sub_id)
+        )).scalars().all()
+        assert len(jobs) == 0
 
 
 @pytest.mark.asyncio

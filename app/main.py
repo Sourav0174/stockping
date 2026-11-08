@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 
 from app.database import init_db
+from app.routes.admin import router as admin_router
 from app.routes.api import router as api_router
 from app.routes.embed import router as embed_router
 from app.routes.webhooks import router as webhook_router
@@ -44,6 +45,10 @@ async def security_headers_middleware(request: Request, call_next):
         response.headers["Content-Security-Policy"] = "frame-ancestors *;"
         if "x-frame-options" in response.headers:
             del response.headers["x-frame-options"]
+    elif path.startswith("/admin"):
+        # Strict framing rejection for admin pages
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none';"
     else:
         # Retain strict framing protection for API and webhook routes
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
@@ -61,6 +66,7 @@ if os.path.exists(ASSETS_DIR):
 app.include_router(api_router)
 app.include_router(embed_router)
 app.include_router(webhook_router)
+app.include_router(admin_router)
 
 
 @app.get("/health", tags=["Health"])

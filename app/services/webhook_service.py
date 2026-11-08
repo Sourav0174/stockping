@@ -81,8 +81,9 @@ async def verify_and_schedule_event_jobs(
 ) -> int:
     """
     Performs authoritative stock verification and creates outbox notification jobs.
-    Atomically claims eligible subscriptions by transitioning status from 'pending' to 'processing'
-    so that concurrent or subsequent stock events cannot schedule duplicate notifications.
+    Atomically claims eligible subscriptions by transitioning status from 'pending' to 'processing'.
+    If outbox insertion or commit fails, the entire transaction is rolled back,
+    ensuring subscriptions return to 'pending'.
     Returns the number of created notification jobs.
     """
     target_client = client or stock_client
@@ -126,50 +127,54 @@ async def verify_and_schedule_event_jobs(
     jobs_created = 0
     now = datetime.now(timezone.utc)
 
-    for sub_id, sub_email, sub_sku in candidate_subs:
-        # Atomically claim subscription by conditionally transitioning 'pending' -> 'processing'
-        claim_stmt = (
-            update(SubscriptionRequest)
-            .where(
-                SubscriptionRequest.id == sub_id,
-                SubscriptionRequest.status == SubscriptionStatus.PENDING.value,
-            )
-            .values(status=SubscriptionStatus.PROCESSING.value)
-        )
-        claim_result = await session.execute(claim_stmt)
-        if claim_result.rowcount == 0:
-            # Another concurrent event or worker already claimed this subscription!
-            continue
-
-        # Check if an active outbox job already exists (double guard)
-        check_stmt = select(EmailOutbox.id).where(
-            EmailOutbox.subscription_id == sub_id,
-            EmailOutbox.status.in_([OutboxStatus.PENDING.value, OutboxStatus.PROCESSING.value]),
-        )
-        existing_job = (await session.execute(check_stmt)).scalar_one_or_none()
-        if existing_job is not None:
-            continue
-
-        job = EmailOutbox(
-            subscription_id=sub_id,
-            event_id=event.event_id,
-            email=sub_email,
-            sku=sub_sku,
-            status=OutboxStatus.PENDING.value,
-            attempts=0,
-            created_at=now,
-            next_retry_at=now,
-        )
-        session.add(job)
-        jobs_created += 1
-
-    event.status = WebhookStatus.PROCESSED.value
-    event.processed_at = now
-    event.last_error = None
-
+    # All subscription claims, outbox insertions, and event updates execute
+    # in a single atomic database transaction.
     try:
+        for sub_id, sub_email, sub_sku in candidate_subs:
+            # Atomically claim subscription by conditionally transitioning 'pending' -> 'processing'
+            claim_stmt = (
+                update(SubscriptionRequest)
+                .where(
+                    SubscriptionRequest.id == sub_id,
+                    SubscriptionRequest.status == SubscriptionStatus.PENDING.value,
+                )
+                .values(status=SubscriptionStatus.PROCESSING.value)
+            )
+            claim_result = await session.execute(claim_stmt)
+            if claim_result.rowcount == 0:
+                # Another concurrent event or worker already claimed this subscription!
+                continue
+
+            # Check if an active outbox job already exists (double guard)
+            check_stmt = select(EmailOutbox.id).where(
+                EmailOutbox.subscription_id == sub_id,
+                EmailOutbox.status.in_([OutboxStatus.PENDING.value, OutboxStatus.PROCESSING.value]),
+            )
+            existing_job = (await session.execute(check_stmt)).scalar_one_or_none()
+            if existing_job is not None:
+                continue
+
+            job = EmailOutbox(
+                subscription_id=sub_id,
+                event_id=event.event_id,
+                email=sub_email,
+                sku=sub_sku,
+                status=OutboxStatus.PENDING.value,
+                attempts=0,
+                created_at=now,
+                next_retry_at=now,
+            )
+            session.add(job)
+            jobs_created += 1
+
+        event.status = WebhookStatus.PROCESSED.value
+        event.processed_at = now
+        event.last_error = None
+
         await session.commit()
-    except IntegrityError:
+    except Exception:
+        # Atomic rollback: subscriptions return to 'pending' if job creation or commit fails
         await session.rollback()
+        raise
 
     return jobs_created
