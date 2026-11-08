@@ -15,7 +15,7 @@ flowchart TD
     end
 
     subgraph AppEngine["Single Docker Container / Process"]
-        WebApp --> DB[("SQLite (WAL Mode)\nsubscription_requests\nwebhook_events\nemail_outbox")]
+        WebApp --> DB[("Database Layer\nNeon PostgreSQL or SQLite Fallback\nsubscription_requests\nwebhook_events\nemail_outbox")]
         Worker["In-Process Background Outbox Worker\n(FastAPI lifespan asyncio task)"]
         Worker -->|Poll & Claim Leases| DB
     end
@@ -65,7 +65,9 @@ The application operates strictly using the client-provided environment contract
 | `ADMIN_PASSWORD` | Password protecting administrative interface | `dev_admin_password` |
 | `PORT` | Listening port for Uvicorn HTTP server | `8000` |
 | `FROM_EMAIL` | Optional sender email address for Resend | `StockPing <onboarding@resend.dev>` |
-| `DATABASE_URL` | Optional SQLite database URL | `sqlite+aiosqlite:///./stockping.db` |
+| `DATABASE_URL` | Optional PostgreSQL (Neon) or SQLite database URL | `sqlite+aiosqlite:///./stockping.db` |
+
+> **Neon PostgreSQL Automatic URL Normalization:** When providing a standard Neon connection string (`postgres://...` or `postgresql://...` with `?sslmode=require`), StockPing automatically converts the scheme to `postgresql+asyncpg://` and maps `sslmode=require` to `ssl=require` for asyncpg compatibility. When `DATABASE_URL` is omitted, StockPing cleanly falls back to local SQLite with WAL mode.
 
 ---
 
@@ -129,9 +131,18 @@ docker run -d \
 ```
 
 ### SQLite Persistence & Volume Usage
-Inside the container, `DATABASE_URL` defaults to `sqlite+aiosqlite:////data/stockping.db`.
-- **Why a Volume Mount is Mandatory:** Docker container filesystems are ephemeral. If a container is replaced, updated, or re-created, any SQLite file stored inside the container layer is destroyed.
+Inside the container, if `DATABASE_URL` is omitted, it defaults to `sqlite+aiosqlite:////data/stockping.db`.
+- **Why a Volume Mount is Mandatory for SQLite:** Docker container filesystems are ephemeral. If a container is replaced, updated, or re-created, any SQLite file stored inside the container layer is destroyed.
 - **Volume Mount:** Mount a named volume (e.g. `-v stockping_data:/data`) or host directory (`-v /path/on/host:/data`) to preserve subscriptions, webhook audit events, and outbox delivery states across container updates.
+
+### Deploying to Render Free with Neon PostgreSQL
+1. Create a free PostgreSQL database on [Neon](https://neon.tech).
+2. Copy your Neon connection string (e.g. `postgresql://user:pass@ep-cool-fog-123.us-east-2.aws.neon.tech/neondb?sslmode=require`).
+3. On [Render](https://render.com), create a new **Web Service** backed by this repository's Dockerfile.
+4. Set the environment variables in the Render Dashboard:
+   - `DATABASE_URL`: Your Neon connection string (StockPing automatically normalizes it for `asyncpg`).
+   - `STOCK_API_URL`, `STOCK_API_KEY`, `RESEND_BASE_URL`, `RESEND_API_KEY`, `WEBHOOK_SECRET`, `ADMIN_PASSWORD`.
+5. Deploy. Render starts the container with `--workers 1`, seamlessly running both FastAPI and the transactional outbox worker against Neon PostgreSQL with automatic connection pooling (`pool_pre_ping`).
 
 ---
 
@@ -189,11 +200,11 @@ http://localhost:8000/admin
 
 ## Automated Test Suite
 
-The project includes 44 automated tests across 5 test modules:
+The project includes 51 automated tests across 6 test modules:
 
 ```bash
 $ pytest -v
-============================== 44 passed in 2.72s ==============================
+============================== 51 passed in 4.77s ==============================
 ```
 
 - [`tests/test_subscriptions.py`](file:///Users/sawankumar/Desktop/privateContribution/back_in_stocks/tests/test_subscriptions.py): Email/SKU normalization, duplicate open subscription handling, 404 on unknown SKU, 502 on stock API drop, concurrent submissions, iframe headers.
@@ -202,6 +213,7 @@ $ pytest -v
 - [`tests/test_concurrency_audit.py`](file:///Users/sawankumar/Desktop/privateContribution/back_in_stocks/tests/test_concurrency_audit.py): Atomic subscription claiming across distinct events, outbox failure rollback, retryable failure claim preservation, permanent failure policy, re-subscription after notification.
 - [`tests/test_admin.py`](file:///Users/sawankumar/Desktop/privateContribution/back_in_stocks/tests/test_admin.py): Basic authentication, invalid password rejection, anti-framing security headers, HTML escaping, empty state rendering, and admin JSON API.
 - [`tests/test_e2e_smoke.py`](file:///Users/sawankumar/Desktop/privateContribution/back_in_stocks/tests/test_e2e_smoke.py): Unified end-to-end user and admin lifecycle verification.
+- [`tests/test_postgres_integration.py`](file:///Users/sawankumar/Desktop/privateContribution/back_in_stocks/tests/test_postgres_integration.py): PostgreSQL schema & partial index verification, Neon URL normalization, atomic claiming, webhook deduplication, transaction rollback, and outbox worker lease recovery under PostgreSQL.
 
 ---
 

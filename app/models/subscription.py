@@ -50,6 +50,7 @@ class SubscriptionRequest(Base):
             "sku",
             unique=True,
             sqlite_where=text("status IN ('pending', 'processing')"),
+            postgresql_where=text("status IN ('pending', 'processing')"),
         ),
         Index("ix_requests_sku_status", "sku", "status"),
     )

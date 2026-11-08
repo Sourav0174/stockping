@@ -71,6 +71,7 @@ class EmailOutbox(Base):
             "subscription_id",
             unique=True,
             sqlite_where=text("status IN ('pending', 'processing')"),
+            postgresql_where=text("status IN ('pending', 'processing')"),
         ),
         Index("ix_outbox_poll", "status", "next_retry_at"),
     )
