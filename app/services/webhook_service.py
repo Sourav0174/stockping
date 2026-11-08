@@ -92,11 +92,9 @@ async def verify_and_schedule_event_jobs(
     if session.in_transaction():
         await session.commit()
 
-    # 1. Authoritative verification via GET {STOCK_API_URL}/{sku}
     try:
         stock_data = await target_client.get_sku_stock(event.sku)
     except (StockAPIConnectionError, StockAPIResponseError) as exc:
-        # Preserve event as pending for worker retry
         event.status = WebhookStatus.PENDING.value
         event.last_error = f"Stock verification failed: {exc}"
         await session.commit()
@@ -105,14 +103,12 @@ async def verify_and_schedule_event_jobs(
     in_stock = is_product_in_stock(stock_data)
 
     if not in_stock:
-        # Product is still out of stock; do not notify customers
         event.status = WebhookStatus.OUT_OF_STOCK.value
         event.processed_at = datetime.now(timezone.utc)
         event.last_error = None
         await session.commit()
         return 0
 
-    # 2. Product is confirmed in stock: identify eligible pending subscriptions
     stmt = select(
         SubscriptionRequest.id,
         SubscriptionRequest.email,

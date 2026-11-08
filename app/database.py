@@ -5,7 +5,6 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
 
-# Async SQLite engine
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,

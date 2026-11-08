@@ -59,11 +59,9 @@ class StockClient:
             if isinstance(data, list):
                 return data
             elif isinstance(data, dict):
-                # Common collection wrappers
                 for key in ("items", "products", "catalogue", "data"):
                     if key in data and isinstance(data[key], list):
                         return data[key]
-                # If dict maps SKUs to details
                 return list(data.values())
             return []
 
@@ -109,7 +107,6 @@ class StockClient:
                         return True
             return False
 
-        # Fallback if catalogue is empty
         stock_info = await self.get_sku_stock(sku_normalized)
         return bool(stock_info)
 

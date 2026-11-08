@@ -16,14 +16,11 @@ ASSETS_DIR = os.path.join(STATIC_DIR, "assets")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize database tables and unique partial indexes
     await init_db()
-    # Start the managed background outbox worker
     worker.start()
     try:
         yield
     finally:
-        # Gracefully shut down background worker
         await worker.stop()
 
 
@@ -58,11 +55,9 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 
-# Mount static assets if compiled
 if os.path.exists(ASSETS_DIR):
     app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
-# Include routers
 app.include_router(api_router)
 app.include_router(embed_router)
 app.include_router(webhook_router)

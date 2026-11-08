@@ -60,14 +60,12 @@ async def get_admin_dashboard(
     stmt = select(SubscriptionRequest).order_by(SubscriptionRequest.created_at.desc())
     subscriptions = (await db.execute(stmt)).scalars().all()
 
-    # Aggregate metric counts
     total_count = len(subscriptions)
     notified_count = sum(1 for s in subscriptions if s.status == SubscriptionStatus.NOTIFIED.value)
     pending_count = sum(1 for s in subscriptions if s.status == SubscriptionStatus.PENDING.value)
     processing_count = sum(1 for s in subscriptions if s.status == SubscriptionStatus.PROCESSING.value)
     failed_count = sum(1 for s in subscriptions if s.status == SubscriptionStatus.FAILED.value)
 
-    # Render table rows with HTML escaping to prevent injection
     rows_html = ""
     if subscriptions:
         for sub in subscriptions:

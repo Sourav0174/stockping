@@ -197,7 +197,6 @@ class EmailClient:
             except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as exc:
                 raise EmailRetryableError(f"Network error delivering email to {to_email}: {exc}") from exc
 
-            # Handle rate limiting (429)
             if response.status_code == 429:
                 retry_after_str = response.headers.get("Retry-After")
                 retry_after = int(retry_after_str) if retry_after_str and retry_after_str.isdigit() else None
@@ -206,13 +205,11 @@ class EmailClient:
                     retry_after=retry_after,
                 )
 
-            # Handle transient 5xx server errors
             if response.status_code >= 500:
                 raise EmailRetryableError(
                     f"Resend server error {response.status_code}: {response.text}"
                 )
 
-            # Handle non-retryable 4xx client errors
             if response.status_code >= 400:
                 raise EmailPermanentError(
                     response.status_code,

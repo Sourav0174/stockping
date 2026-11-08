@@ -18,7 +18,6 @@ async def get_embed_form(sku: str | None = None):
         with open(INDEX_HTML_PATH, "r", encoding="utf-8") as f:
             content = f.read()
     else:
-        # High-quality semantic fallback if frontend bundle has not yet been built
         content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>

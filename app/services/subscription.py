@@ -49,7 +49,6 @@ async def register_subscription(
     """
     target_client = client or stock_client
 
-    # 1. Verify SKU existence in upstream catalogue
     try:
         exists = await target_client.sku_exists(sku)
     except (StockAPIConnectionError, StockAPIResponseError) as exc:
@@ -58,7 +57,6 @@ async def register_subscription(
     if not exists:
         raise SKUNotFoundError(sku)
 
-    # 2. Check for an active open subscription
     stmt = select(SubscriptionRequest).where(
         SubscriptionRequest.email == email,
         SubscriptionRequest.sku == sku,
@@ -70,7 +68,6 @@ async def register_subscription(
     if existing is not None:
         return existing, True
 
-    # 3. Atomically persist new request
     new_request = SubscriptionRequest(
         email=email,
         sku=sku,

@@ -84,7 +84,6 @@ class OutboxWorker:
         now = datetime.now(timezone.utc)
         lease_expire = now + timedelta(seconds=settings.WORKER_LEASE_SECONDS)
 
-        # 1. Identify candidate jobs
         candidate_stmt = (
             select(EmailOutbox.id)
             .where(
@@ -100,7 +99,6 @@ class OutboxWorker:
 
         processed_count = 0
 
-        # 2. Claim and execute jobs atomically
         for job_id in candidate_ids:
             claim_stmt = (
                 update(EmailOutbox)
@@ -120,16 +118,14 @@ class OutboxWorker:
                 # Job was claimed by another concurrent worker loop
                 continue
 
-            # Fetch claimed job
             job = await session.get(EmailOutbox, job_id)
             if not job:
                 continue
 
-            # 3. Deliver email via Resend API (no DB write transaction open during HTTP call)
+            # Ensure no DB write transaction is open during the external HTTP request
             try:
                 await email_client.send_restock_email(job.email, job.sku)
 
-                # Successful delivery confirmed: transition outbox to SENT and subscription to NOTIFIED
                 sent_timestamp = datetime.now(timezone.utc)
                 job.status = OutboxStatus.SENT.value
                 job.sent_at = sent_timestamp
@@ -175,7 +171,6 @@ class OutboxWorker:
                 await session.commit()
 
             except EmailPermanentError as exc:
-                # Permanent non-retryable error
                 job.attempts += 1
                 job.status = OutboxStatus.FAILED.value
                 job.lease_timeout_at = None

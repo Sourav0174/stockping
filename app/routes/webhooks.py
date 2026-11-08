@@ -26,20 +26,18 @@ async def handle_stock_webhook(
     x_webhook_secret: str | None = Header(default=None, alias="X-Webhook-Secret"),
     db: AsyncSession = Depends(get_db),
 ):
-    # 1. Constant-time secret authentication
+    # Constant-time secret authentication to mitigate timing attacks
     if not x_webhook_secret or not hmac.compare_digest(x_webhook_secret, settings.WEBHOOK_SECRET):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing X-Webhook-Secret header.",
         )
 
-    # 2. Extract raw body for audit/idempotent persistence
     try:
         raw_body = (await request.body()).decode("utf-8")
     except Exception:
         raw_body = payload.model_dump_json()
 
-    # 3. Ingest webhook event with database-level uniqueness
     event, is_duplicate = await ingest_webhook_event(
         session=db,
         event_id=payload.event_id,
@@ -49,15 +47,12 @@ async def handle_stock_webhook(
     )
 
     if is_duplicate:
-        # A repeated event must never generate another set of notification jobs.
-        # Return a successful acknowledgment for already-recorded duplicate events.
         return WebhookResponse(
             status="duplicate_acknowledged",
             message="Event has already been recorded.",
             event_id=payload.event_id,
         )
 
-    # 4. Perform authoritative stock verification & schedule outbox jobs
     try:
         jobs_count = await verify_and_schedule_event_jobs(session=db, event=event)
         return WebhookResponse(

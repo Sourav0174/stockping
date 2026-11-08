@@ -40,7 +40,6 @@ async def create_subscription_request(
             detail=str(exc),
         ) from exc
     except Exception as exc:
-        # Prevent internal exception leaks
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while processing your request. Please try again.",
