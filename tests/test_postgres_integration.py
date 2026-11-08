@@ -21,6 +21,18 @@ from app.services.worker import OutboxWorker
 
 def test_normalize_database_url():
     """Verifies standard Neon and cloud PostgreSQL URLs are correctly converted for asyncpg."""
+    # 1. Neon URL with sslmode=require and channel_binding=require
+    neon_with_cb = "postgres://alex:secret123@ep-cool-fog-123456.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+    assert normalize_database_url(neon_with_cb) == (
+        "postgresql+asyncpg://alex:secret123@ep-cool-fog-123456.us-east-2.aws.neon.tech/neondb?ssl=require"
+    )
+
+    neon_cb_first = "postgresql://alex:secret123@ep-cool-fog-123456.us-east-2.aws.neon.tech/neondb?channel_binding=require&sslmode=require"
+    assert normalize_database_url(neon_cb_first) == (
+        "postgresql+asyncpg://alex:secret123@ep-cool-fog-123456.us-east-2.aws.neon.tech/neondb?ssl=require"
+    )
+
+    # 2. URL with sslmode=require only
     neon_postgres = "postgres://alex:secret123@ep-cool-fog-123456.us-east-2.aws.neon.tech/neondb?sslmode=require"
     assert normalize_database_url(neon_postgres) == (
         "postgresql+asyncpg://alex:secret123@ep-cool-fog-123456.us-east-2.aws.neon.tech/neondb?ssl=require"
@@ -36,10 +48,14 @@ def test_normalize_database_url():
         "postgresql+asyncpg://alex:secret123@ep-cool-fog-123456.us-east-2.aws.neon.tech/neondb?ssl=require"
     )
 
+    # 3. URL with no SSL parameters (preserves other parameters)
     local_pg = "postgresql://localhost:5432/stockping"
     assert normalize_database_url(local_pg) == "postgresql+asyncpg://localhost:5432/stockping"
 
-    # SQLite fallback cases
+    local_pg_params = "postgresql://localhost:5432/stockping?timeout=10&channel_binding=require"
+    assert normalize_database_url(local_pg_params) == "postgresql+asyncpg://localhost:5432/stockping?timeout=10"
+
+    # 4. Existing SQLite fallback
     assert normalize_database_url(None) == "sqlite+aiosqlite:///./stockping.db"
     assert normalize_database_url("") == "sqlite+aiosqlite:///./stockping.db"
     assert normalize_database_url("   ") == "sqlite+aiosqlite:///./stockping.db"

@@ -9,6 +9,7 @@ def normalize_database_url(raw_url: str | None) -> str:
     - Converts Neon/PostgreSQL schemes ('postgres://', 'postgresql://') to 'postgresql+asyncpg://'.
     - Converts SQLite schemes without driver to 'sqlite+aiosqlite://'.
     - Translates query parameter 'sslmode' to 'ssl' as required by asyncpg.
+    - Removes unsupported query parameters like 'channel_binding' which asyncpg does not accept.
     """
     if not raw_url or not str(raw_url).strip():
         return "sqlite+aiosqlite:///./stockping.db"
@@ -33,12 +34,16 @@ def normalize_database_url(raw_url: str | None) -> str:
                 if not p:
                     continue
                 k, *v = p.split("=", 1)
+                key_clean = k.strip().lower()
                 val = v[0] if v else ""
-                if k == "sslmode":
+                if key_clean == "sslmode":
                     sslmode_val = val
-                elif k == "ssl":
+                elif key_clean == "ssl":
                     has_ssl = True
                     new_params.append(p)
+                elif key_clean == "channel_binding":
+                    # Drop unsupported parameter for asyncpg compatibility
+                    continue
                 else:
                     new_params.append(p)
             if not has_ssl and sslmode_val is not None:
