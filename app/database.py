@@ -34,6 +34,10 @@ class Base(DeclarativeBase):
     pass
 
 
+# Register all models on Base.metadata
+from app import models  # noqa: E402, F401
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with async_session_maker() as session:
         try:

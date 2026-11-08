@@ -5,8 +5,10 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import app.models  # noqa: F401 - ensure all models are registered on Base.metadata
 from app.database import Base, get_db
 from app.main import app
+from app.services.worker import worker
 
 
 @pytest_asyncio.fixture
@@ -42,6 +44,10 @@ async def test_db_session(tmp_path):
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # Configure background worker to use the test database
+    orig_worker_session_maker = worker.session_maker
+    worker.session_maker = async_session
+
     async def override_get_db():
         async with async_session() as session:
             try:
@@ -54,6 +60,7 @@ async def test_db_session(tmp_path):
     yield async_session
 
     app.dependency_overrides.clear()
+    worker.session_maker = orig_worker_session_maker
     await test_engine.dispose()
 
 
