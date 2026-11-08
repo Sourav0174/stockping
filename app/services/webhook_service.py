@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
-import json
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,9 +81,15 @@ async def verify_and_schedule_event_jobs(
 ) -> int:
     """
     Performs authoritative stock verification and creates outbox notification jobs.
+    Atomically claims eligible subscriptions by transitioning status from 'pending' to 'processing'
+    so that concurrent or subsequent stock events cannot schedule duplicate notifications.
     Returns the number of created notification jobs.
     """
     target_client = client or stock_client
+
+    # Ensure no database write transaction is held open during external HTTP requests
+    if session.in_transaction():
+        await session.commit()
 
     # 1. Authoritative verification via GET {STOCK_API_URL}/{sku}
     try:
@@ -107,31 +112,49 @@ async def verify_and_schedule_event_jobs(
         return 0
 
     # 2. Product is confirmed in stock: identify eligible pending subscriptions
-    stmt = select(SubscriptionRequest).where(
+    stmt = select(
+        SubscriptionRequest.id,
+        SubscriptionRequest.email,
+        SubscriptionRequest.sku,
+    ).where(
         SubscriptionRequest.sku == event.sku,
         SubscriptionRequest.status == SubscriptionStatus.PENDING.value,
     )
     result = await session.execute(stmt)
-    pending_subs = result.scalars().all()
+    candidate_subs = result.all()
 
     jobs_created = 0
     now = datetime.now(timezone.utc)
 
-    for sub in pending_subs:
-        # Check if outbox job already exists (idempotency guard)
-        check_stmt = select(EmailOutbox).where(
-            EmailOutbox.subscription_id == sub.id,
-            EmailOutbox.event_id == event.event_id,
+    for sub_id, sub_email, sub_sku in candidate_subs:
+        # Atomically claim subscription by conditionally transitioning 'pending' -> 'processing'
+        claim_stmt = (
+            update(SubscriptionRequest)
+            .where(
+                SubscriptionRequest.id == sub_id,
+                SubscriptionRequest.status == SubscriptionStatus.PENDING.value,
+            )
+            .values(status=SubscriptionStatus.PROCESSING.value)
+        )
+        claim_result = await session.execute(claim_stmt)
+        if claim_result.rowcount == 0:
+            # Another concurrent event or worker already claimed this subscription!
+            continue
+
+        # Check if an active outbox job already exists (double guard)
+        check_stmt = select(EmailOutbox.id).where(
+            EmailOutbox.subscription_id == sub_id,
+            EmailOutbox.status.in_([OutboxStatus.PENDING.value, OutboxStatus.PROCESSING.value]),
         )
         existing_job = (await session.execute(check_stmt)).scalar_one_or_none()
         if existing_job is not None:
             continue
 
         job = EmailOutbox(
-            subscription_id=sub.id,
+            subscription_id=sub_id,
             event_id=event.event_id,
-            email=sub.email,
-            sku=sub.sku,
+            email=sub_email,
+            sku=sub_sku,
             status=OutboxStatus.PENDING.value,
             attempts=0,
             created_at=now,

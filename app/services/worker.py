@@ -79,6 +79,7 @@ class OutboxWorker:
     async def claim_and_process_jobs(self, session: AsyncSession) -> int:
         """
         Atomically claims eligible pending outbox jobs and dispatches emails.
+        Ensures no write transaction is open during the external HTTP request.
         """
         now = datetime.now(timezone.utc)
         lease_expire = now + timedelta(seconds=settings.WORKER_LEASE_SECONDS)
@@ -124,18 +125,17 @@ class OutboxWorker:
             if not job:
                 continue
 
-            # 3. Deliver email via Resend API
+            # 3. Deliver email via Resend API (no DB write transaction open during HTTP call)
             try:
                 await email_client.send_restock_email(job.email, job.sku)
 
-                # Successful delivery confirmed
+                # Successful delivery confirmed: transition outbox to SENT and subscription to NOTIFIED
                 sent_timestamp = datetime.now(timezone.utc)
                 job.status = OutboxStatus.SENT.value
                 job.sent_at = sent_timestamp
                 job.lease_timeout_at = None
                 job.last_error = None
 
-                # Update associated subscription request
                 sub = await session.get(SubscriptionRequest, job.subscription_id)
                 if sub:
                     sub.status = SubscriptionStatus.NOTIFIED.value
@@ -153,6 +153,7 @@ class OutboxWorker:
                 job.last_error = f"Rate limit (429): {exc}"
                 delay = exc.retry_after if exc.retry_after else min(5 * (2 ** job.attempts), 300)
                 job.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+                # Subscription remains in 'processing' state to block duplicate jobs
                 await session.commit()
 
             except EmailRetryableError as exc:
@@ -161,13 +162,20 @@ class OutboxWorker:
                 job.last_error = f"Retryable error: {exc}"
                 if job.attempts >= settings.WORKER_MAX_ATTEMPTS:
                     job.status = OutboxStatus.FAILED.value
+                    sub = await session.get(SubscriptionRequest, job.subscription_id)
+                    if sub:
+                        sub.status = SubscriptionStatus.FAILED.value
+                        sub.attempts = job.attempts
+                        sub.last_error = f"Max delivery attempts exceeded: {exc}"
                 else:
                     job.status = OutboxStatus.PENDING.value
                     delay = min(2 ** job.attempts, 120)
                     job.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+                    # Subscription remains in 'processing' state during retries
                 await session.commit()
 
             except EmailPermanentError as exc:
+                # Permanent non-retryable error
                 job.attempts += 1
                 job.status = OutboxStatus.FAILED.value
                 job.lease_timeout_at = None
@@ -175,6 +183,7 @@ class OutboxWorker:
 
                 sub = await session.get(SubscriptionRequest, job.subscription_id)
                 if sub:
+                    sub.status = SubscriptionStatus.FAILED.value
                     sub.attempts += 1
                     sub.last_error = str(exc)
 
@@ -186,6 +195,11 @@ class OutboxWorker:
                 job.last_error = f"Unexpected delivery error: {exc}"
                 if job.attempts >= settings.WORKER_MAX_ATTEMPTS:
                     job.status = OutboxStatus.FAILED.value
+                    sub = await session.get(SubscriptionRequest, job.subscription_id)
+                    if sub:
+                        sub.status = SubscriptionStatus.FAILED.value
+                        sub.attempts = job.attempts
+                        sub.last_error = str(exc)
                 else:
                     job.status = OutboxStatus.PENDING.value
                     job.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=10)

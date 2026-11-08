@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 import enum
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -65,5 +65,12 @@ class EmailOutbox(Base):
     __table_args__ = (
         # Enforce that the same subscription cannot receive multiple jobs for the same stock event
         UniqueConstraint("subscription_id", "event_id", name="uq_sub_event_outbox"),
+        # Enforce at the DB level that a subscription can have at most one active notification job (pending or processing)
+        Index(
+            "uq_active_outbox_per_sub",
+            "subscription_id",
+            unique=True,
+            sqlite_where=text("status IN ('pending', 'processing')"),
+        ),
         Index("ix_outbox_poll", "status", "next_retry_at"),
     )
